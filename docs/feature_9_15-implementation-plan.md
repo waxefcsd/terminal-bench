@@ -1,4 +1,4 @@
-# `feature_9_15` Implementation Plan
+# `feature_9_15_event_replay_reconciliation` Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - 所有路径必须相对于 `D:\workhome\bench\terminal-bench` 的仓库结构，并使用 `tasks/event-replay-reconciliation/` 作为唯一任务目录。
-- 从 `main` 创建的 `feature_9_15` 分支中工作。
+- 从 `main` 创建的 `feature_9_15_event_replay_reconciliation` 分支中工作。
 - 使用仓库当前 task.toml schema 和检查脚本，不照搬旧版本格式。
 - verifier 使用 `environment_mode = "separate"`。
 - 测试依赖在 `tests/Dockerfile` 构建阶段安装，不在 `tests/test.sh` 运行时联网安装。
@@ -113,5 +113,5 @@
 
 - [ ] Confirm all required evidence is present and no infrastructure error is mislabeled as model failure.
 - [ ] Run `git diff --check`, inspect `git status`, and verify no unrelated files changed.
-- [ ] Commit task implementation and evidence on `feature_9_15`.
+- [ ] Commit task implementation and evidence on `feature_9_15_event_replay_reconciliation`.
 - [ ] Push the branch to the user-controlled GitHub fork and provide the repository URL only after the evidence is complete.

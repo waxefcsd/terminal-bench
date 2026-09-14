@@ -1,4 +1,4 @@
-# `feature_9_15` Task Design
+# `feature_9_15_event_replay_reconciliation` Task Design
 
 ## 1. Assignment understanding
 
@@ -22,7 +22,7 @@
 基线是仓库当前 `main`，本分支为：
 
 ```text
-feature_9_15
+feature_9_15_event_replay_reconciliation
 ```
 
 不使用外层 `D:\workhome\bench` 中的旧文件作为实现来源；外层内容只能作为之前的思考记录，不能混入本分支。
