@@ -62,9 +62,9 @@ class ReplayLedger:
         if not isinstance(payload, dict):
             raise ValueError("payload_not_object")
         result = deepcopy(payload)
+        if version in {1, 2} and "money" in result:
+            raise ValueError("conflicting_money_fields")
         if version == 1 and ("amount" in result or "currency" in result):
-            if "money" in result:
-                raise ValueError("conflicting_money_fields")
             if "amount" not in result or "currency" not in result:
                 raise ValueError("incomplete_v1_money")
             raw, currency = result.pop("amount"), result.pop("currency")
@@ -79,8 +79,6 @@ class ReplayLedger:
                 raise ValueError("lossy_v1_money")
             result["money"] = {"minor": int(minor), "currency": currency}
         elif version == 2 and ("amount_cents" in result or "currency" in result):
-            if "money" in result:
-                raise ValueError("conflicting_money_fields")
             if "amount_cents" not in result or "currency" not in result:
                 raise ValueError("incomplete_v2_money")
             minor, currency = result.pop("amount_cents"), result.pop("currency")
@@ -88,11 +86,13 @@ class ReplayLedger:
                 raise ValueError("invalid_v2_money")
             result["money"] = {"minor": minor, "currency": currency}
         money = result.get("money")
-        if money is not None and (not isinstance(money, dict) or set(money) != {"minor", "currency"}
-                                  or not integer(money["minor"]) or money["minor"] < 0
-                                  or not isinstance(money["currency"], str) or len(money["currency"]) != 3
-                                  or not money["currency"].isupper()):
-            raise ValueError("invalid_money")
+        if money is not None:
+            if not isinstance(money, dict) or set(money) != {"minor", "currency"}:
+                raise ValueError("invalid_money")
+            if not integer(money["minor"]) or money["minor"] < 0:
+                raise ValueError("invalid_money_minor")
+            if not isinstance(money["currency"], str) or len(money["currency"]) != 3 or not money["currency"].isupper():
+                raise ValueError("invalid_currency")
         if "quantity" in result and (not integer(result["quantity"]) or result["quantity"] <= 0):
             raise ValueError("invalid_quantity")
         if set(result) - {"money", "quantity"}:
@@ -163,15 +163,13 @@ class ReplayLedger:
                 previous = next((item for item in self.rejected if item["event_id"] == rejection["event_id"]), None)
                 if previous is None:
                     self.rejected.append(rejection)
-                elif rejection["code"] == "invalid_envelope" and previous["code"] != "invalid_envelope":
+                elif ({"invalid_envelope": 0, "migration_failed": 1}[rejection["code"]], compact(rejection)) < ({"invalid_envelope": 0, "migration_failed": 1}[previous["code"]], compact(previous)):
                     self.rejected.remove(previous); self.rejected.append(rejection)
                 continue
             assert value is not None
             self.migrated_count += migrated
             groups.setdefault(value["event_id"], []).append(value)
         for event_id, copies in sorted(groups.items()):
-            if any(item["event_id"] == event_id for item in self.rejected):
-                continue
             variants = {compact(value): value for value in copies}
             if len(variants) > 1:
                 chosen = min(variants.values(), key=compact)
@@ -179,6 +177,9 @@ class ReplayLedger:
                     "aggregate_type": chosen["aggregate_type"], "aggregate_id": chosen["aggregate_id"],
                     "order_id": chosen["order_id"], "canonical_version": 3, "code": "identity_conflict", "detail": {},
                     "variant_digests": sorted(hashlib.sha256(text.encode()).hexdigest() for text in variants)})
+                self.rejected = [item for item in self.rejected if item["event_id"] != event_id]
+            elif any(item["event_id"] == event_id for item in self.rejected):
+                continue
             else:
                 self.events[event_id] = {"value": next(iter(variants.values())), "copy_count": len(copies), "status": "pending", "detail": {}}
 
@@ -217,9 +218,12 @@ class ReplayLedger:
         if value["event_type"] == "order.cancelled":
             prior = [self.events[event_id]["value"] for event_id in self.application_order
                      if (self.events[event_id]["value"]["tenant_id"], self.events[event_id]["value"]["order_id"]) == (value["tenant_id"], value["order_id"])]
-            captures = [item["event_id"] for item in prior if item["event_type"] == "payment.captured" and item["event_id"] not in self.compensations]
+            if any(item["event_type"] == "shipment.delivered" for item in prior):
+                return False
+            all_captures = [item for item in prior if item["event_type"] == "payment.captured"]
+            captures = [item["event_id"] for item in all_captures if item["event_id"] not in self.compensations]
             authorizations = [item["event_id"] for item in prior if item["event_type"] == "payment.authorized" and item["event_id"] not in self.compensations]
-            targets: set[str] = set(captures or authorizations)
+            targets: set[str] = set(captures if all_captures else authorizations)
             targets.update(item["event_id"] for item in prior if item["event_type"] == "inventory.reserved"
                            and item["event_id"] not in self.compensations
                            and self.states[(item["tenant_id"], item["order_id"], item["aggregate_type"], item["aggregate_id"])] == "reserved")
@@ -243,7 +247,7 @@ class ReplayLedger:
             order_key, payload = (value["tenant_id"], value["order_id"]), value["payload"]
             known = self.facts.setdefault(order_key, {})
             if value["event_type"] == "order.created":
-                if known:
+                if known and known != payload:
                     record.update(status="payload_conflict", detail={"reason": "order_fact_mismatch"}); continue
             elif (("money" in payload and known.get("money") != payload["money"])
                   or ("quantity" in payload and known.get("quantity") != payload["quantity"])):

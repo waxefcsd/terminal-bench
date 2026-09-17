@@ -12,7 +12,7 @@ HERE = Path(__file__).resolve().parent
 TESTS = HERE.parent / "tests"
 sys.path.insert(0, str(TESTS))
 
-from fixtures import base_cases, build_schema, happy_path  # noqa: E402
+from fixtures import base_cases, build_schema, event, happy_path  # noqa: E402
 from reference_engine import reconcile  # noqa: E402
 from replay_reference import ReplayLedger  # noqa: E402
 
@@ -55,6 +55,16 @@ class OracleTests(unittest.TestCase):
             expected = reconcile(build_schema(), rows)
             for name, content in expected.serialized.items():
                 self.assertEqual((output_dir / name).read_bytes(), content)
+
+    def test_oracle_matches_reference_for_rejection_details(self):
+        negative = event("negative", "order.created", "order", "o-1")
+        negative["payload"] = {"money": {"minor": -1, "currency": "USD"}}
+        malformed = event("same", "order.created", "order", "o-1"); malformed["logical_clock"] = True
+        bad_fields = event("same", "order.created", "order", "o-1"); bad_fields["extra"] = 1
+        for rows in ([negative], [malformed, bad_fields], list(reversed([malformed, bad_fields]))):
+            expected = reconcile(build_schema(), rows)
+            state, audit, manifest = self.run_ledger(rows)
+            self.assertEqual((state, audit, manifest), (expected.state, expected.audit, expected.manifest))
 
 
 if __name__ == "__main__":

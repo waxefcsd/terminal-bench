@@ -149,6 +149,28 @@ class ReferenceEngineTests(unittest.TestCase):
         result = reconcile(build_schema(), rows)
         self.assertEqual({e["event_id"]: e["code"] for e in result.audit["entries"]}["cancel"], "barrier_unsatisfied")
 
+    def test_refunded_capture_does_not_require_authorization_void(self):
+        rows = happy_path()[:6]
+        rows.extend([
+            event("refund", "payment.refunded", "payment", "p-1", clock=7, predecessors=("capture",),
+                  compensates="capture", money=(2599, "USD")),
+            event("cancel", "order.cancelled", "order", "o-1", clock=8, predecessors=("refund", "commit"),
+                  money=(2599, "USD"), quantity=2),
+        ])
+        result = reconcile(build_schema(), rows)
+        self.assertEqual({e["event_id"]: e["code"] for e in result.audit["entries"]}["cancel"], "applied")
+
+    def test_delivered_order_cannot_cancel(self):
+        rows = happy_path()[:9]
+        rows.extend([
+            event("refund", "payment.refunded", "payment", "p-1", clock=11, predecessors=("deliver",),
+                  compensates="capture", money=(2599, "USD")),
+            event("cancel", "order.cancelled", "order", "o-1", clock=12, predecessors=("refund",),
+                  money=(2599, "USD"), quantity=2),
+        ])
+        result = reconcile(build_schema(), rows)
+        self.assertEqual({e["event_id"]: e["code"] for e in result.audit["entries"]}["cancel"], "barrier_unsatisfied")
+
     def test_one_event_id_has_one_terminal_disposition(self):
         valid = event("same", "order.created", "order", "o-1", money=(100, "USD"), quantity=1)
         invalid = deepcopy(valid); invalid["logical_clock"] = True
@@ -156,6 +178,33 @@ class ReferenceEngineTests(unittest.TestCase):
         entries = [entry for entry in result.audit["entries"] if entry["event_id"] == "same"]
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["code"], "invalid_envelope")
+
+    def test_identity_conflict_precedes_malformed_copy(self):
+        first = event("same", "order.created", "order", "o-1", money=(100, "USD"), quantity=1)
+        second = deepcopy(first); second["payload"]["quantity"] = 2
+        malformed = deepcopy(first); malformed["logical_clock"] = True
+        result = reconcile(build_schema(), [malformed, first, second])
+        entries = [entry for entry in result.audit["entries"] if entry["event_id"] == "same"]
+        self.assertEqual([entry["code"] for entry in entries], ["identity_conflict"])
+
+    def test_rejection_choice_is_input_order_invariant(self):
+        first = event("same", "order.created", "order", "o-1"); first["logical_clock"] = True
+        second = event("same", "order.created", "order", "o-1"); second["extra"] = 1
+        left = reconcile(build_schema(), [first, second]).serialized
+        right = reconcile(build_schema(), [second, first]).serialized
+        self.assertEqual(left, right)
+
+    def test_identical_second_create_is_invalid_transition(self):
+        first = event("first", "order.created", "order", "o-1", clock=1, money=(100, "USD"), quantity=1)
+        second = event("second", "order.created", "order", "o-1", clock=2, money=(100, "USD"), quantity=1)
+        result = reconcile(build_schema(), [first, second])
+        self.assertEqual({e["event_id"]: e["code"] for e in result.audit["entries"]}["second"], "invalid_transition")
+
+    def test_legacy_row_cannot_use_canonical_money_only(self):
+        v1, _, _ = version_equivalent_cases(); row = v1[0]
+        row["data"] = {"money": {"minor": 100, "currency": "USD"}, "quantity": 1}
+        result = reconcile(build_schema(), [row])
+        self.assertEqual(result.audit["entries"][0]["code"], "migration_failed")
 
 
 if __name__ == "__main__":

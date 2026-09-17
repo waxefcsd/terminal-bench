@@ -115,9 +115,9 @@ def _canonical_payload(payload: object, *, version: int, scale: int) -> JsonObje
     if not isinstance(payload, dict):
         raise ValueError("payload_not_object")
     result = deepcopy(payload)
+    if version in {1, 2} and "money" in result:
+        raise ValueError("conflicting_money_fields")
     if version == 1 and ("amount" in result or "currency" in result):
-        if "money" in result:
-            raise ValueError("conflicting_money_fields")
         if set(key for key in ("amount", "currency") if key in result) != {"amount", "currency"}:
             raise ValueError("incomplete_v1_money")
         raw = result.pop("amount")
@@ -134,8 +134,6 @@ def _canonical_payload(payload: object, *, version: int, scale: int) -> JsonObje
             raise ValueError("lossy_v1_money")
         result["money"] = {"minor": int(minor), "currency": currency}
     elif version == 2 and ("amount_cents" in result or "currency" in result):
-        if "money" in result:
-            raise ValueError("conflicting_money_fields")
         if set(key for key in ("amount_cents", "currency") if key in result) != {"amount_cents", "currency"}:
             raise ValueError("incomplete_v2_money")
         minor = result.pop("amount_cents")
@@ -306,7 +304,8 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
     for item in normalized:
         if isinstance(item, Rejection):
             current = rejected.get(item.event_id)
-            if current is None or (item.code == "invalid_envelope" and current.code != "invalid_envelope"):
+            rank = {"invalid_envelope": 0, "migration_failed": 1}
+            if current is None or (rank[item.code], _compact(_entry_for_rejection(item))) < (rank[current.code], _compact(_entry_for_rejection(current))):
                 rejected[item.event_id] = item
         else:
             migrated_count += int(item.source_version != 3)
@@ -315,8 +314,6 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
     events: dict[str, CanonicalEvent] = {}
     conflict_entries: list[JsonObject] = []
     for event_id, copies in sorted(variants.items()):
-        if event_id in rejected:
-            continue
         canonical_variants: dict[str, CanonicalEvent] = {}
         for copy in copies:
             canonical_variants.setdefault(_compact(copy.canonical), copy)
@@ -329,6 +326,9 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
                 "detail": {},
                 "variant_digests": sorted(hashlib.sha256(text.encode()).hexdigest() for text in canonical_variants),
             })
+            rejected.pop(event_id, None)
+            continue
+        if event_id in rejected:
             continue
         chosen = next(iter(canonical_variants.values()))
         chosen.copy_count = len(copies)
@@ -375,9 +375,12 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
                 return False
         if event.event_type == "order.cancelled":
             order_events = [e for e in events.values() if e.event_id in applied and (e.tenant_id, e.order_id) == (event.tenant_id, event.order_id)]
-            captures = [e.event_id for e in order_events if e.event_type == "payment.captured" and e.event_id not in compensations]
+            if any(e.event_type == "shipment.delivered" for e in order_events):
+                return False
+            all_captures = [e for e in order_events if e.event_type == "payment.captured"]
+            captures = [e.event_id for e in all_captures if e.event_id not in compensations]
             authorizations = [e.event_id for e in order_events if e.event_type == "payment.authorized" and e.event_id not in compensations]
-            required_targets = set(captures or authorizations)
+            required_targets = set(captures if all_captures else authorizations)
             required_targets.update(e.event_id for e in order_events if e.event_type == "inventory.reserved"
                                     and e.event_id not in compensations and state_of(e) == "reserved")
             required_targets.update(e.event_id for e in order_events if e.event_type == "shipment.dispatched"
@@ -391,7 +394,7 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
         known = facts.setdefault(order_key, {})
         payload = event.canonical["payload"]
         if event.event_type == "order.created":
-            return not known
+            return not known or known == payload
         if "money" in payload and known.get("money") != payload["money"]:
             return False
         if "quantity" in payload and known.get("quantity") != payload["quantity"]:
