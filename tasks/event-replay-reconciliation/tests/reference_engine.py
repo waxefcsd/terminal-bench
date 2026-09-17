@@ -229,7 +229,8 @@ def normalize_event(row: object, schema: JsonObject) -> CanonicalEvent | Rejecti
         else:
             raise ValueError("unsupported_version")
     except (KeyError, TypeError, ValueError) as exc:
-        return Rejection("migration_failed", *ident, {"reason": str(exc)})
+        code = "invalid_envelope" if version == 3 else "migration_failed"
+        return Rejection(code, *ident, {"reason": str(exc)})
     return CanonicalEvent(canonical=canonical, source_version=version)
 
 

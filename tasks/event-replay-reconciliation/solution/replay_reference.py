@@ -146,7 +146,8 @@ class ReplayLedger:
                 raise ValueError("invalid_compensation_reference")
             return value, None, int(version != 3)
         except (KeyError, TypeError, ValueError) as exc:
-            return None, self.rejection(row, "migration_failed", str(exc)), 0
+            code = "invalid_envelope" if version == 3 else "migration_failed"
+            return None, self.rejection(row, code, str(exc)), 0
 
     def prepare(self) -> None:
         groups: dict[str, list[dict[str, Any]]] = {}
