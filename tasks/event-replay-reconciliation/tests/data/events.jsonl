@@ -1,0 +1,1 @@
+{"aggregate_id":"o-1","aggregate_type":"order","compensates_event_id":null,"event_id":"create","event_type":"order.created","logical_clock":1,"occurred_at":"2026-01-01T00:01:00Z","order_id":"o-1","payload":{"money":{"currency":"USD","minor":2599},"quantity":2},"predecessor_ids":[],"schema_version":3,"tenant_id":"acme"}
