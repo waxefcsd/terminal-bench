@@ -136,8 +136,10 @@ class ReplayLedger:
             for key in ("event_id", "tenant_id", "aggregate_type", "aggregate_id", "order_id", "event_type", "occurred_at"):
                 if not isinstance(value[key], str) or not value[key]:
                     raise ValueError(f"invalid_{key}")
-            if value["schema_version"] != 3 or not integer(value["logical_clock"]) or value["logical_clock"] < 0:
-                raise ValueError("invalid_clock_or_version")
+            if value["schema_version"] != 3:
+                raise ValueError("canonical_version")
+            if not integer(value["logical_clock"]) or value["logical_clock"] < 0:
+                raise ValueError("invalid_logical_clock")
             if (not isinstance(value["predecessor_ids"], list)
                     or not all(isinstance(item, str) for item in value["predecessor_ids"])
                     or len(set(value["predecessor_ids"])) != len(value["predecessor_ids"])):

@@ -12,7 +12,7 @@ HERE = Path(__file__).resolve().parent
 TESTS = HERE.parent / "tests"
 sys.path.insert(0, str(TESTS))
 
-from fixtures import build_schema, compensation_path, happy_path, precedence_case  # noqa: E402
+from fixtures import base_cases, build_schema, happy_path  # noqa: E402
 from reference_engine import reconcile  # noqa: E402
 from replay_reference import ReplayLedger  # noqa: E402
 
@@ -28,7 +28,8 @@ class OracleTests(unittest.TestCase):
             return ReplayLedger.from_paths(schema_path, events_path).execute()
 
     def test_oracle_matches_independent_reference_for_core_cases(self):
-        for rows in (happy_path(), compensation_path(), precedence_case()):
+        for case in base_cases():
+            rows = list(case.events)
             expected = reconcile(build_schema(), rows)
             state, audit, manifest = self.run_ledger(rows)
             self.assertEqual(state, expected.state)
