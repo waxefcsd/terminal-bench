@@ -14,9 +14,9 @@ Environment: Harbor 0.23.0, Modal, Codex subscription authentication via `CODEX_
 | Cross-implementation oracle comparison | Pass | 2/2; all six hidden case families |
 | Verifier Docker build | Pass | `event-replay-reconciliation-tests` |
 | TB3 static checks | Pass | 22/22 using LF-normalized temporary copies of the repository CI scripts on Windows |
-| Oracle, Modal | 1.0 | `jobs/event-replay-redesign-oracle-modal-6` after the deterministic-precedence fixes |
-| Nop, Modal | 0.0 | `jobs/event-replay-redesign-nop-modal-3` at `f3678565` |
-| Implementation-rubric review | Infrastructure failure | Reviewer image failed while fetching Debian packages; no rubric verdict was produced |
+| Oracle, Modal | 1.0 | `jobs/event-replay-redesign-oracle-modal-7` at `ea8aa5d5` |
+| Nop, Modal | 0.0 | `jobs/event-replay-redesign-nop-modal-4` at `ea8aa5d5` |
+| Implementation-rubric review | Infrastructure failure | `jobs/2026-09-17__23-45-20`: `AgentSetupTimeoutError` after 360 seconds; no rubric verdict |
 
 The Modal artifact collector logs `SandboxFilesystemNotADirectoryError` when it probes individual artifact paths as directories. This occurs after the agent phase and does not affect verifier execution, exception counts, or rewards.
 
@@ -37,6 +37,15 @@ harbor run -p tasks/event-replay-reconciliation `
 | Codex / `openai/gpt-5.6-sol`, xhigh | `event-replay-redesign-codex-final-2` | 0 | 0.0 | Historical result; invalidated by later verifier fixes |
 | Codex / `openai/gpt-5.6-sol`, xhigh | `event-replay-redesign-codex-final-3` | 0 | 0.0 | Historical result; invalidated by later verifier fixes |
 | Codex / `openai/gpt-5.6-sol`, xhigh | `event-replay-redesign-codex-final-4` | 0 | 0.0 | Historical result; invalidated by later verifier fixes |
+
+After the verifier fixes, two replacement trials are valid model failures:
+
+| Agent/model | Job | Exceptions | Reward | Classification |
+|---|---|---:|---:|---|
+| Codex / `openai/gpt-5.6-sol`, xhigh | `event-replay-redesign-codex-fixed-1` | 0 | 0.0 | Valid model failure |
+| Codex / `openai/gpt-5.6-sol`, xhigh | `event-replay-redesign-codex-fixed-2` | 0 | 0.0 | Valid model failure |
+
+Replacement runs `codex-fixed-3`, `codex-fixed-4`, and `codex-fixed-5` ended with `AgentTimeoutError` and are excluded. A third valid replacement trial is still required.
 
 An earlier run, `event-replay-redesign-codex-final-1`, ended with `ApiUsageLimitError`; it is explicitly excluded from the three required trials.
 
