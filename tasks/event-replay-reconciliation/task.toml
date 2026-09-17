@@ -22,6 +22,10 @@ category = "Software"
 subcategory = "Data engineering"
 tags = ["event-replay", "schema-migration", "causality", "compensation", "audit"]
 expert_time_estimate_hours = 6
+difficulty_explanation = "Requires exact schema migration, global identity reconciliation, causal scheduling, multi-aggregate barriers, compensation legality, and deterministic byte-level artifacts."
+solution_explanation = "Normalize v1/v2/v3 rows, collapse identities, validate references, replay one ready event at a time, classify stuck dependencies, then serialize canonical state, audit, and manifest outputs."
+verification_explanation = "A separate unprivileged verifier executes the submission against six hidden families plus order/duplicate metamorphics and compares canonical artifacts with an independent reference engine."
+relevant_experience = "Data engineering, event sourcing, distributed-system causality, schema evolution, and deterministic serialization."
 
 [verifier]
 timeout_sec = 900.0

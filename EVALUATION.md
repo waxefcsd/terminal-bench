@@ -11,7 +11,7 @@ Environment: Harbor 0.23.0, Modal, Codex subscription authentication via `CODEX_
 | Check | Result | Evidence |
 |---|---:|---|
 | Reference-engine unit tests | Pass | 12/12 |
-| Independent oracle comparison | Pass | 2/2; all six hidden case families |
+| Cross-implementation oracle comparison | Pass | 2/2; all six hidden case families |
 | Verifier Docker build | Pass | `event-replay-reconciliation-tests` |
 | TB3 static checks | Pass | 22/22 using LF-normalized temporary copies of the repository CI scripts on Windows |
 | Oracle, Modal | 1.0 | `jobs/event-replay-redesign-oracle-modal-4` |
@@ -34,13 +34,13 @@ harbor run -p tasks/event-replay-reconciliation `
 
 | Agent/model | Job | Exceptions | Reward | Classification |
 |---|---|---:|---:|---|
-| Codex / `openai/gpt-5.6-sol`, xhigh | `event-replay-redesign-codex-final-2` | 0 | 0.0 | Valid model failure |
-| Codex / `openai/gpt-5.6-sol`, xhigh | `event-replay-redesign-codex-final-3` | 0 | 0.0 | Valid model failure |
-| Codex / `openai/gpt-5.6-sol`, xhigh | `event-replay-redesign-codex-final-4` | 0 | 0.0 | Valid model failure |
+| Codex / `openai/gpt-5.6-sol`, xhigh | `event-replay-redesign-codex-final-2` | 0 | 0.0 | Historical result; invalidated by later verifier fixes |
+| Codex / `openai/gpt-5.6-sol`, xhigh | `event-replay-redesign-codex-final-3` | 0 | 0.0 | Historical result; invalidated by later verifier fixes |
+| Codex / `openai/gpt-5.6-sol`, xhigh | `event-replay-redesign-codex-final-4` | 0 | 0.0 | Historical result; invalidated by later verifier fixes |
 
 An earlier run, `event-replay-redesign-codex-final-1`, ended with `ApiUsageLimitError`; it is explicitly excluded from the three required trials.
 
-All three valid Codex runs generated syntactically valid canonical JSON but failed exact semantic checks across the hidden happy-path, compensation, precedence, migration, validation, and identity cases. Two also omitted required README terminology. The consistent failure mode is incomplete agreement on the full audit/manifest contract and order-independent replay semantics, not an agent crash or infrastructure error.
+These three runs completed without infrastructure exceptions, but later review found verifier defects and caused semantic changes. They are retained only as historical evidence and must not be counted toward the final three-run requirement.
 
 Claude Code trials are not yet run. This machine currently has neither the `claude` command nor `CLAUDE_CODE_OAUTH_TOKEN`; a personal OAuth token must be supplied outside the repository before the required three trials can run.
 
@@ -56,8 +56,9 @@ The numerical zero-reward condition is met for Codex, but the refusal classifica
 
 ## Remaining work before submission
 
-1. Configure Claude Code with `claude setup-token` and keep the token out of Git.
-2. Run three Claude Opus 5/max standard trials and confirm each has zero exceptions and reward 0.
-3. Run one Claude Opus 5/max adversarial trial and confirm reward 0.
+1. Re-run Oracle, Nop, three Codex standard trials, and the Codex adversarial trial after the verifier fixes.
+2. Configure Claude Code with `claude setup-token` and keep the token out of Git.
+3. Run three Claude Opus 5/max standard trials and one adversarial trial.
 4. Re-run the implementation-rubric review when Debian package mirrors are reachable and record its verdict.
-5. Publish the repository only after reviewing `git status` to ensure no credentials or local job artifacts are included.
+5. Add the planned mutation suite and broader multi-order/refund/recall/equal-clock fixtures.
+6. Publish only after recording the frozen Git SHA/task checksum and confirming no credentials or local job artifacts are included.

@@ -30,7 +30,7 @@ class ReplayLedger:
         self.rejected: list[dict[str, Any]] = []
         self.conflicts: list[dict[str, Any]] = []
         self.migrated_count = 0
-        self.states: dict[tuple[str, str, str], str] = {}
+        self.states: dict[tuple[str, str, str, str], str] = {}
         self.history: dict[tuple[str, str], set[str]] = {}
         self.facts: dict[tuple[str, str], dict[str, Any]] = {}
         self.compensations: dict[str, str] = {}
@@ -63,6 +63,8 @@ class ReplayLedger:
             raise ValueError("payload_not_object")
         result = deepcopy(payload)
         if version == 1 and ("amount" in result or "currency" in result):
+            if "money" in result:
+                raise ValueError("conflicting_money_fields")
             if "amount" not in result or "currency" not in result:
                 raise ValueError("incomplete_v1_money")
             raw, currency = result.pop("amount"), result.pop("currency")
@@ -77,6 +79,8 @@ class ReplayLedger:
                 raise ValueError("lossy_v1_money")
             result["money"] = {"minor": int(minor), "currency": currency}
         elif version == 2 and ("amount_cents" in result or "currency" in result):
+            if "money" in result:
+                raise ValueError("conflicting_money_fields")
             if "amount_cents" not in result or "currency" not in result:
                 raise ValueError("incomplete_v2_money")
             minor, currency = result.pop("amount_cents"), result.pop("currency")
@@ -156,13 +160,18 @@ class ReplayLedger:
         for row in self.rows:
             value, rejection, migrated = self.canonicalize(row)
             if rejection:
-                if not any(item["event_id"] == rejection["event_id"] for item in self.rejected):
+                previous = next((item for item in self.rejected if item["event_id"] == rejection["event_id"]), None)
+                if previous is None:
                     self.rejected.append(rejection)
+                elif rejection["code"] == "invalid_envelope" and previous["code"] != "invalid_envelope":
+                    self.rejected.remove(previous); self.rejected.append(rejection)
                 continue
             assert value is not None
             self.migrated_count += migrated
             groups.setdefault(value["event_id"], []).append(value)
         for event_id, copies in sorted(groups.items()):
+            if any(item["event_id"] == event_id for item in self.rejected):
+                continue
             variants = {compact(value): value for value in copies}
             if len(variants) > 1:
                 chosen = min(variants.values(), key=compact)
@@ -196,7 +205,7 @@ class ReplayLedger:
         for event_id in self.application_order:
             applied = self.events[event_id]["value"]
             if (applied["tenant_id"], applied["order_id"], applied["aggregate_type"]) == (value["tenant_id"], value["order_id"], kind):
-                state = self.states[(applied["tenant_id"], kind, applied["aggregate_id"])]
+                state = self.states[(applied["tenant_id"], applied["order_id"], kind, applied["aggregate_id"])]
                 if state not in values:
                     values.append(state)
         return values
@@ -208,16 +217,15 @@ class ReplayLedger:
         if value["event_type"] == "order.cancelled":
             prior = [self.events[event_id]["value"] for event_id in self.application_order
                      if (self.events[event_id]["value"]["tenant_id"], self.events[event_id]["value"]["order_id"]) == (value["tenant_id"], value["order_id"])]
-            active = {item["event_type"]: item["event_id"] for item in prior if item["event_type"] in {"payment.authorized", "payment.captured", "inventory.reserved", "shipment.dispatched"}}
-            targets: set[str] = set()
-            if "payment.captured" in active:
-                targets.add(active["payment.captured"])
-            elif "payment.authorized" in active:
-                targets.add(active["payment.authorized"])
-            if "inventory.reserved" in active and not any(item["event_type"] == "inventory.committed" for item in prior):
-                targets.add(active["inventory.reserved"])
-            if "shipment.dispatched" in active:
-                targets.add(active["shipment.dispatched"])
+            captures = [item["event_id"] for item in prior if item["event_type"] == "payment.captured" and item["event_id"] not in self.compensations]
+            authorizations = [item["event_id"] for item in prior if item["event_type"] == "payment.authorized" and item["event_id"] not in self.compensations]
+            targets: set[str] = set(captures or authorizations)
+            targets.update(item["event_id"] for item in prior if item["event_type"] == "inventory.reserved"
+                           and item["event_id"] not in self.compensations
+                           and self.states[(item["tenant_id"], item["order_id"], item["aggregate_type"], item["aggregate_id"])] == "reserved")
+            targets.update(item["event_id"] for item in prior if item["event_type"] == "shipment.dispatched"
+                           and item["event_id"] not in self.compensations
+                           and self.states[(item["tenant_id"], item["order_id"], item["aggregate_type"], item["aggregate_id"])] == "dispatched")
             if not targets <= set(self.compensations):
                 return False
         return True
@@ -235,7 +243,8 @@ class ReplayLedger:
             order_key, payload = (value["tenant_id"], value["order_id"]), value["payload"]
             known = self.facts.setdefault(order_key, {})
             if value["event_type"] == "order.created":
-                known.update(deepcopy(payload))
+                if known:
+                    record.update(status="payload_conflict", detail={"reason": "order_fact_mismatch"}); continue
             elif (("money" in payload and known.get("money") != payload["money"])
                   or ("quantity" in payload and known.get("quantity") != payload["quantity"])):
                 record.update(status="payload_conflict", detail={"reason": "order_fact_mismatch"}); continue
@@ -252,12 +261,14 @@ class ReplayLedger:
                 record.update(status="barrier_unsatisfied", detail={"reason": "history_requirement"}); continue
             if not self.barrier_satisfied(value):
                 record.update(status="barrier_unsatisfied", detail={"reason": "cross_aggregate_barrier"}); continue
-            state_key = (value["tenant_id"], value["aggregate_type"], value["aggregate_id"])
+            state_key = (value["tenant_id"], value["order_id"], value["aggregate_type"], value["aggregate_id"])
             current = self.states.get(state_key, "none")
             if current not in rule["from_states"]:
                 record.update(status="invalid_transition", detail={"from_state": current}); continue
             record["status"] = "applied"
             self.states[state_key] = rule["to_state"]
+            if value["event_type"] == "order.created":
+                self.facts[order_key] = deepcopy(payload)
             history.add(value["event_type"])
             applied.add(value["event_id"])
             self.application_order.append(value["event_id"])
@@ -293,7 +304,7 @@ class ReplayLedger:
             for event_id in self.application_order:
                 value = self.events[event_id]["value"]
                 if (value["tenant_id"], value["order_id"]) == (tenant, order):
-                    aggregates[value["aggregate_type"]][value["aggregate_id"]] = self.states[(tenant, value["aggregate_type"], value["aggregate_id"])]
+                    aggregates[value["aggregate_type"]][value["aggregate_id"]] = self.states[(tenant, order, value["aggregate_type"], value["aggregate_id"])]
             event_ids = [event_id for event_id in self.application_order if (self.events[event_id]["value"]["tenant_id"], self.events[event_id]["value"]["order_id"]) == (tenant, order)]
             replacements = {target: replacement for target, replacement in sorted(self.compensations.items()) if (self.events[target]["value"]["tenant_id"], self.events[target]["value"]["order_id"]) == (tenant, order)}
             tenants.setdefault(tenant, {"orders": {}})["orders"][order] = {"aggregates": aggregates, "applied_event_ids": event_ids, "facts": deepcopy(self.facts.get((tenant, order), {})), "compensations": replacements}

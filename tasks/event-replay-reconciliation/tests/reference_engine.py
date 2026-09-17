@@ -116,6 +116,8 @@ def _canonical_payload(payload: object, *, version: int, scale: int) -> JsonObje
         raise ValueError("payload_not_object")
     result = deepcopy(payload)
     if version == 1 and ("amount" in result or "currency" in result):
+        if "money" in result:
+            raise ValueError("conflicting_money_fields")
         if set(key for key in ("amount", "currency") if key in result) != {"amount", "currency"}:
             raise ValueError("incomplete_v1_money")
         raw = result.pop("amount")
@@ -132,6 +134,8 @@ def _canonical_payload(payload: object, *, version: int, scale: int) -> JsonObje
             raise ValueError("lossy_v1_money")
         result["money"] = {"minor": int(minor), "currency": currency}
     elif version == 2 and ("amount_cents" in result or "currency" in result):
+        if "money" in result:
+            raise ValueError("conflicting_money_fields")
         if set(key for key in ("amount_cents", "currency") if key in result) != {"amount_cents", "currency"}:
             raise ValueError("incomplete_v2_money")
         minor = result.pop("amount_cents")
@@ -301,7 +305,9 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
     migrated_count = 0
     for item in normalized:
         if isinstance(item, Rejection):
-            rejected.setdefault(item.event_id, item)
+            current = rejected.get(item.event_id)
+            if current is None or (item.code == "invalid_envelope" and current.code != "invalid_envelope"):
+                rejected[item.event_id] = item
         else:
             migrated_count += int(item.source_version != 3)
             variants.setdefault(item.event_id, []).append(item)
@@ -309,6 +315,8 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
     events: dict[str, CanonicalEvent] = {}
     conflict_entries: list[JsonObject] = []
     for event_id, copies in sorted(variants.items()):
+        if event_id in rejected:
+            continue
         canonical_variants: dict[str, CanonicalEvent] = {}
         for copy in copies:
             canonical_variants.setdefault(_compact(copy.canonical), copy)
@@ -346,7 +354,7 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
                 event.detail = {"predecessor_id": predecessor_id, "reason": "cross_order_or_tenant"}
                 break
 
-    states: dict[tuple[str, str, str], str] = {}
+    states: dict[tuple[str, str, str, str], str] = {}
     histories: dict[tuple[str, str], set[str]] = {}
     facts: dict[tuple[str, str], JsonObject] = {}
     compensations: dict[str, str] = {}
@@ -354,12 +362,11 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
     application_order: list[str] = []
 
     def state_of(event: CanonicalEvent) -> str:
-        return states.get((event.tenant_id, event.aggregate_type, event.aggregate_id), "none")
+        return states.get((event.tenant_id, event.order_id, event.aggregate_type, event.aggregate_id), "none")
 
     def order_states(event: CanonicalEvent, aggregate_type: str) -> list[str]:
-        return [state for (tenant, kind, _), state in states.items() if tenant == event.tenant_id and kind == aggregate_type
-                and any(e.order_id == event.order_id and e.aggregate_type == kind and e.aggregate_id == aggregate_id and e.event_id in applied
-                        for e in events.values() for aggregate_id in [e.aggregate_id])]
+        return [state for (tenant, order, kind, _), state in states.items()
+                if (tenant, order, kind) == (event.tenant_id, event.order_id, aggregate_type)]
 
     def barrier_satisfied(event: CanonicalEvent) -> bool:
         barriers = schema.get("barriers", {}).get(event.event_type, {})
@@ -368,16 +375,13 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
                 return False
         if event.event_type == "order.cancelled":
             order_events = [e for e in events.values() if e.event_id in applied and (e.tenant_id, e.order_id) == (event.tenant_id, event.order_id)]
-            active = {e.event_type: e.event_id for e in order_events if e.event_type in {"payment.authorized", "payment.captured", "inventory.reserved", "shipment.dispatched"}}
-            required_targets = set()
-            if "payment.captured" in active:
-                required_targets.add(active["payment.captured"])
-            elif "payment.authorized" in active:
-                required_targets.add(active["payment.authorized"])
-            if "inventory.reserved" in active and not any(e.event_type == "inventory.committed" for e in order_events):
-                required_targets.add(active["inventory.reserved"])
-            if "shipment.dispatched" in active:
-                required_targets.add(active["shipment.dispatched"])
+            captures = [e.event_id for e in order_events if e.event_type == "payment.captured" and e.event_id not in compensations]
+            authorizations = [e.event_id for e in order_events if e.event_type == "payment.authorized" and e.event_id not in compensations]
+            required_targets = set(captures or authorizations)
+            required_targets.update(e.event_id for e in order_events if e.event_type == "inventory.reserved"
+                                    and e.event_id not in compensations and state_of(e) == "reserved")
+            required_targets.update(e.event_id for e in order_events if e.event_type == "shipment.dispatched"
+                                    and e.event_id not in compensations and state_of(e) == "dispatched")
             if not required_targets <= set(compensations):
                 return False
         return True
@@ -387,8 +391,7 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
         known = facts.setdefault(order_key, {})
         payload = event.canonical["payload"]
         if event.event_type == "order.created":
-            known.update(deepcopy(payload))
-            return True
+            return not known
         if "money" in payload and known.get("money") != payload["money"]:
             return False
         if "quantity" in payload and known.get("quantity") != payload["quantity"]:
@@ -434,7 +437,9 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
             event.detail = {"from_state": current}
             continue
         event.status = "applied"
-        states[(event.tenant_id, event.aggregate_type, event.aggregate_id)] = rule["to_state"]
+        states[(event.tenant_id, event.order_id, event.aggregate_type, event.aggregate_id)] = rule["to_state"]
+        if event.event_type == "order.created":
+            facts[(event.tenant_id, event.order_id)] = deepcopy(event.canonical["payload"])
         history.add(event.event_type)
         applied.add(event.event_id)
         application_order.append(event.event_id)
@@ -469,13 +474,10 @@ def reconcile(schema: JsonObject, rows: list[JsonObject]) -> Result:
     order_keys = sorted({(event.tenant_id, event.order_id) for event in events.values() if event.event_id in applied})
     for tenant_id, order_id in order_keys:
         aggregate_map: JsonObject = {kind: {} for kind in schema["aggregate_types"]}
-        for (tenant, kind, aggregate_id), value in sorted(states.items()):
-            if tenant != tenant_id:
+        for (tenant, owner_order, kind, aggregate_id), value in sorted(states.items()):
+            if (tenant, owner_order) != (tenant_id, order_id):
                 continue
-            owner = next((event.order_id for event in events.values() if event.event_id in applied and event.tenant_id == tenant
-                          and event.aggregate_type == kind and event.aggregate_id == aggregate_id), None)
-            if owner == order_id:
-                aggregate_map[kind][aggregate_id] = value
+            aggregate_map[kind][aggregate_id] = value
         order_event_ids = [event_id for event_id in application_order if events[event_id].tenant_id == tenant_id and events[event_id].order_id == order_id]
         order_compensations = {target: replacement for target, replacement in sorted(compensations.items())
                                if events[target].tenant_id == tenant_id and events[target].order_id == order_id}
