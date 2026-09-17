@@ -145,9 +145,10 @@ class ReplayLedger:
             if not integer(value["logical_clock"]) or value["logical_clock"] < 0:
                 raise ValueError("invalid_logical_clock")
             if (not isinstance(value["predecessor_ids"], list)
-                    or not all(isinstance(item, str) for item in value["predecessor_ids"])
-                    or len(set(value["predecessor_ids"])) != len(value["predecessor_ids"])):
+                    or not all(isinstance(item, str) for item in value["predecessor_ids"])):
                 raise ValueError("invalid_predecessors")
+            if len(set(value["predecessor_ids"])) != len(value["predecessor_ids"]):
+                raise ValueError("duplicate_predecessor")
             if value["compensates_event_id"] is not None and not isinstance(value["compensates_event_id"], str):
                 raise ValueError("invalid_compensation_reference")
             return value, None, int(version != 3)

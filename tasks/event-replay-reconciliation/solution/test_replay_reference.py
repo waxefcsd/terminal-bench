@@ -61,7 +61,9 @@ class OracleTests(unittest.TestCase):
         negative["payload"] = {"money": {"minor": -1, "currency": "USD"}}
         malformed = event("same", "order.created", "order", "o-1"); malformed["logical_clock"] = True
         bad_fields = event("same", "order.created", "order", "o-1"); bad_fields["extra"] = 1
-        for rows in ([negative], [malformed, bad_fields], list(reversed([malformed, bad_fields]))):
+        duplicate_pred = event("duplicate-pred", "order.created", "order", "o-1")
+        duplicate_pred["predecessor_ids"] = ["x", "x"]
+        for rows in ([negative], [duplicate_pred], [malformed, bad_fields], list(reversed([malformed, bad_fields]))):
             expected = reconcile(build_schema(), rows)
             state, audit, manifest = self.run_ledger(rows)
             self.assertEqual((state, audit, manifest), (expected.state, expected.audit, expected.manifest))
